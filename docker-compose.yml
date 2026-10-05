@@ -1,0 +1,77 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: payments
+      POSTGRES_PASSWORD: payments
+      POSTGRES_DB: payments
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payments -d payments"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: payments
+      RABBITMQ_DEFAULT_PASS: payments
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://payments:payments@postgres:5432/payments
+      RABBITMQ_URL: amqp://payments:payments@rabbitmq:5672/
+      API_KEY: test-key
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os,urllib.request; r=urllib.request.Request('http://127.0.0.1:8000/health', headers={'X-API-Key': os.environ['API_KEY']}); urllib.request.urlopen(r)",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  consumer:
+    build: .
+    entrypoint: ["python", "-m", "app.worker"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://payments:payments@postgres:5432/payments
+      RABBITMQ_URL: amqp://payments:payments@rabbitmq:5672/
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    stop_grace_period: 30s
+
+volumes:
+  pgdata:
+  rabbitmq:
